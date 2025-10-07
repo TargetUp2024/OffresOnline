@@ -1,0 +1,5 @@
+pandas==2.2.3
+requests==2.32.3
+rarfile==4.2
+docx2pdf==0.1.8
+selenium==4.27.1
