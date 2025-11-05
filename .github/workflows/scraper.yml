@@ -1,11 +1,14 @@
-name: Run OffersOnline Bot
+name: Run Tender Bot
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Allows you to run this workflow manually from the Actions tab
+  schedule:
+    - cron: '0 8 * * 1-5' # Runs at 8:00 AM UTC, Monday to Friday
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 30 # Set a timeout to prevent long runs
 
     steps:
       - name: Checkout repository
@@ -14,34 +17,51 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.9.12"
+          python-version: "3.9"
 
-      - name: Install Chrome and ChromeDriver
+      - name: Install System Dependencies for Headless Chrome and OCR
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget unzip xvfb
+          sudo apt-get install -y \
+            tesseract-ocr \
+            tesseract-ocr-fra \
+            tesseract-ocr-ara \
+            poppler-utils \
+            libgl1-mesa-glx \
+            libglib2.0-0
+          
+      - name: Install Google Chrome and ChromeDriver
+        run: |
+          # Install Google Chrome
           wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo apt install -y ./google-chrome-stable_current_amd64.deb
+          rm google-chrome-stable_current_amd64.deb
+          
+          # Install ChromeDriver
           DRIVER_VERSION=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_STABLE")
           wget -q "https://storage.googleapis.com/chrome-for-testing-public/${DRIVER_VERSION}/linux64/chromedriver-linux64.zip"
           unzip chromedriver-linux64.zip
           sudo mv chromedriver-linux64/chromedriver /usr/local/bin/
           sudo chmod +x /usr/local/bin/chromedriver
-          rm -rf chromedriver-linux64*
+          rm -rf chromedriver-linux64.zip
 
-      - name: Install Python dependencies
+      - name: Install Python dependencies from requirements.txt
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Tender Bot
-        env:
-          PYTHONUNBUFFERED: 1
-        run: |
-          python scripts/Offres_online_bot.py
+      - name: Run Main Python Script
+        # No 'env' block needed as credentials are in the script
+        run: python scripts/Offres_online_bot.py
 
-      - name: Upload downloaded files
+      - name: Upload Results and Debug Artifacts
+        # This step runs even if the script fails, so you can see logs and screenshots
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tender_downloads
-          path: /home/runner/downloads
+          name: bot-artifacts
+          path: |
+            tender_results.csv
+            downloads/
+            *.png
+            *.html
