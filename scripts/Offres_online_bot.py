@@ -1,188 +1,309 @@
+import os
+import time
+import re
+import glob
+import base64
 import pandas as pd
 import requests
-import re
+import zipfile
+import fitz  # PyMuPDF
+from pdf2image import convert_from_path
+from PIL import Image
+import pytesseract
+import docx
+import traceback
 from bs4 import BeautifulSoup as bs
-import os 
-import glob
-import time
-import selenium
+
 from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import (
+    TimeoutException,
+    NoSuchElementException
+)
 from selenium.webdriver.chrome.service import Service
-from selenium.common.exceptions import StaleElementReferenceException
+from selenium.webdriver.chrome.options import Options
 
-N8N_WEBHOOK_URL = "https://anasellll.app.n8n.cloud/webhook/f234915f-8cdc-4838-8bf8-c3ee74680513"
-DOWNLOAD_DIR = "/home/runner/work/downloads"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+from openai import OpenAI
 
-USERNAME = "contact@targetupconsulting.com"
-PASSWORD = "TargetUp2024@@"
+print("--- SCRIPT STARTED ---")
 
-# ------------------------
-# Selenium setup
-# ------------------------
-options = webdriver.ChromeOptions()
-prefs = {
-    "download.default_directory": DOWNLOAD_DIR,
+# --- Credentials and Configuration (Hardcoded as requested) ---
+OFFRES_USERNAME = "TARGETUP"
+OFFRES_PASSWORD = "TARGETUP2024"
+OPENAI_API_KEY = "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"
+N8N_WEBHOOK_URL = "https://targetup.app.n8n.cloud/webhook-test/dc4cf7c8-b44e-4404-830d-ef7cf3e7b6ca"
+
+print("Credentials and configuration loaded.")
+
+# --- Setup download folder within the GitHub Actions workspace ---
+workspace_path = os.getcwd() # Gets the current working directory in the runner
+download_folder = os.path.join(workspace_path, "downloads")
+os.makedirs(download_folder, exist_ok=True)
+print(f"Download folder created at: {download_folder}")
+
+# --- Chrome options for headless execution in GitHub Actions ---
+chrome_options = Options()
+chrome_options.add_argument("--headless")
+chrome_options.add_argument("--no-sandbox")
+chrome_options.add_argument("--disable-dev-shm-usage")
+chrome_options.add_argument("--window-size=1920,1080")
+chrome_options.add_experimental_option("prefs", {
+    "download.default_directory": download_folder,
     "download.prompt_for_download": False,
     "download.directory_upgrade": True,
-    "safebrowsing.enabled": True,
-}
-options.add_experimental_option("prefs", prefs)
-options.add_argument("--headless=new")
-options.add_argument("--no-sandbox")
-options.add_argument("--disable-dev-shm-usage")
-options.add_argument("--window-size=1920,1080")
+    "safebrowsing.enabled": True
+})
 
-service = Service("/usr/bin/chromedriver")
-driver = webdriver.Chrome(service=service, options=options)
-wait = WebDriverWait(driver, 15)
-
-driver.get("https://www.offresonline.com/")
-
-driver.find_element(By.CSS_SELECTOR,"#main-nav > ul > li:nth-child(2)").click() # se connecter
-time.sleep(1)
-driver.find_element(By.CSS_SELECTOR, "#Login").send_keys("TARGETUP") # User Name
-time.sleep(1)
-driver.find_element(By.CSS_SELECTOR, "#pwd").send_keys("TARGETUP2024") # Password
-time.sleep(1)
-driver.find_element(By.CSS_SELECTOR, "#buuuttt").click() # Cliker
-
-driver.find_element(By.CSS_SELECTOR, "#ctl00_Linkf30").click() # AO de Jour
-time.sleep(2)
-
-
-def extract_popup_data(driver, wait):
-    """
-    This function extracts all information from the currently open popup.
-    It assumes the driver has already switched to the correct iframe.
-    """
-    details = {}
-    try:
-        # --- Extract Title Info (Reference and Publication Date) ---
-        title_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "span.span_tota")))
-        title_text = title_element.text
-        # Example: "Détails d'appel d'offre N° 23/MDA/2025 publié le 15/09/2025"
-        parts = title_text.split('publié le')
-        if len(parts) == 2:
-            details['Référence N°'] = parts[0].replace("Détails d'appel d'offre N°", "").strip()
-            details['Date de Publication'] = parts[1].strip()
-        else:
-            details['Référence N°'] = 'Not Found'
-            details['Date de Publication'] = 'Not Found'
-
-        # --- Extract Key-Value Pairs from the main table ---
-        # Find all rows in the main details table
-        detail_rows = driver.find_elements(By.XPATH, "//table[@width='800px']//tr")
-        
-        for row in detail_rows:
-            try:
-                # We look for rows that have exactly two columns (key and value)
-                cells = row.find_elements(By.TAG_NAME, "td")
-                if len(cells) == 2:
-                    key = cells[0].text.strip().replace(':', '').replace('&nbsp;', '').strip()
-                    value = cells[1].text.strip()
-                    if key and value: # Only add if both key and value have content
-                        details[key] = value
-            except Exception:
-                continue # Ignore rows that don't fit the pattern
-        
-        # --- Special case for the "Objet" which is in a nested table ---
-        try:
-            objet_element = driver.find_element(By.CSS_SELECTOR, "td.classltdtitreleftvueNBOBJ strong")
-            details['Objet'] = objet_element.text.strip()
-        except NoSuchElementException:
-            details['Objet'] = None # Or a default value like 'Not Found'
-
-        # --- Special case for "Date Limite" at the bottom ---
-        try:
-            date_limite_element = driver.find_element(By.XPATH, "//td[contains(text(), 'DATE LIMITE')]/following-sibling::td")
-            details['DATE LIMITE'] = date_limite_element.text.strip()
-        except NoSuchElementException:
-            details['DATE LIMITE'] = None
-
-    except TimeoutException:
-        print("    - Timed out while waiting for popup content.")
-        return None
-    except Exception as e:
-        print(f"    - An unexpected error occurred during extraction: {e}")
-        return None
-        
-    return details
-
-
-wait = WebDriverWait(driver, 10)
-scraped_data = [] # This list will hold all our scraped dictionaries
-
+# --- PART 1: SCRAPING TENDER INFORMATION ---
+print("\n--- PART 1: STARTING BROWSER AND SCRAPING ---")
 try:
-    # --- 3. LOCATE THE TABLE AND GET THE NUMBER OF ROWS ---
-    print("Waiting for the main table to load...")
-    table_body = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "#tableao > tbody")))
+    print("Initializing WebDriver...")
+    driver = webdriver.Chrome(options=chrome_options)
+    print("WebDriver started successfully in headless mode.")
+
+    print("Navigating to https://www.offresonline.com/")
+    driver.get("https://www.offresonline.com/")
+    time.sleep(2)
+
+    print("Clicking 'Se connecter'...")
+    driver.find_element(By.CSS_SELECTOR, "#main-nav > ul > li:nth-child(2)").click()
+    time.sleep(1)
+
+    print("Entering login credentials...")
+    driver.find_element(By.CSS_SELECTOR, "#Login").send_keys(OFFRES_USERNAME)
+    time.sleep(1)
+    driver.find_element(By.CSS_SELECTOR, "#pwd").send_keys(OFFRES_PASSWORD)
+    time.sleep(1)
+    driver.find_element(By.CSS_SELECTOR, "#buuuttt").click()
+    print("Login successful.")
+    time.sleep(2)
+
+    print("Navigating to 'AO de Jour' (Daily Tenders)...")
+    driver.find_element(By.CSS_SELECTOR, "#ctl00_Linkf30").click()
+
+    print("Waiting for the tender table to load...")
+    table_body = WebDriverWait(driver, 15).until(
+        EC.presence_of_element_located((By.XPATH, '//*[@id="tableao"]/tbody'))
+    )
     rows = table_body.find_elements(By.TAG_NAME, "tr")
-    num_rows = len(rows)
-    
-    if num_rows == 0:
-        print("No rows were found in the table. Exiting.")
-    else:
-        print(f"Found {num_rows} rows to process.")
-        print("-" * 30)
+    print(f"Found {len(rows)} rows in the tender table.")
 
-    # --- 4. LOOP THROUGH EACH ROW ---
-    for i in range(num_rows):
-        print(f"Processing row {i + 1} of {num_rows}...")
+    all_data = []
+    for i, row in enumerate(rows):
         try:
-            # Re-find the rows in each iteration to prevent StaleElementReferenceException
-            current_rows = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "#tableao > tbody"))).find_elements(By.TAG_NAME, "tr")
-            current_rows[i].click()
+            # Using find_elements to avoid exceptions and check length
+            td_list = row.find_elements(By.TAG_NAME, "td")
+            if len(td_list) < 6:
+                print(f"  Row {i+1}: Skipping malformed row with {len(td_list)} cells.")
+                continue
 
-            # --- Switch to the iframe that contains the popup ---
-            wait.until(EC.frame_to_be_available_and_switch_to_it((By.ID, "IframeEdit")))
+            organisme_objet_html = td_list[2].get_attribute('innerHTML')
+            soup = bs(organisme_objet_html, 'html.parser')
+            strong_tags = soup.find_all('strong')
+            organisme = strong_tags[0].get_text(strip=True) if len(strong_tags) > 0 else ''
+            objet = strong_tags[1].get_text(strip=True) if len(strong_tags) > 1 else ''
             
-            # --- Scrape the data ---
-            print("  - Switched to iframe. Extracting data...")
-            popup_info = extract_popup_data(driver, wait)
-            if popup_info:
-                scraped_data.append(popup_info)
-                print("  - Data extracted successfully.")
+            value = ""
+            try:
+                # Check both possible input titles
+                input_element = row.find_element(By.XPATH, ".//input[@title='Marquer comme Lu ?' or @title='Déja vu']")
+                value = input_element.get_attribute("value")
+            except NoSuchElementException:
+                value = "" # No download link found
 
-            # --- IMPORTANT: Switch back to the main document ---
-            driver.switch_to.default_content()
-            
-            # --- Close the popup ---
-            close_button = wait.until(EC.element_to_be_clickable((By.ID, "btnCancel")))
-            close_button.click()
-            time.sleep(1) # Stable wait for popup to close
-            
-            print(f"Row {i + 1} processed.")
-            print("-" * 30)
+            all_data.append({'Objet': objet, 'Value': value})
 
         except Exception as e:
-            print(f"An error occurred on row {i + 1}: {e}")
-            print("Refreshing page and trying to continue...")
-            driver.refresh()
-            time.sleep(3)
+            print(f"  Row {i+1}: Skipping row due to an unexpected error: {e}")
             continue
+    
+    if not all_data:
+        print("WARNING: No data was scraped from the table. Exiting script.")
+        driver.quit()
+        exit()
 
-except TimeoutException:
-    print("Error: The initial table was not found on the page.")
-finally:
-    # --- 5. CREATE DATAFRAME AND EXPORT TO CSV ---
-    if scraped_data:
-        print("\nCreating DataFrame from scraped data...")
-        df = pd.DataFrame(scraped_data)
+    df = pd.DataFrame(all_data)
+    print(f"Successfully created DataFrame with {len(df)} initial rows.")
+
+    excluded_words = [
+        "construction", "installation", "recrutement", "travaux", "fourniture", "achat", 
+        "equipement", "maintenance", "works", "goods", "supply", "acquisition",
+        "recruitment", "nettoyage", "gardiennage"
+    ]
+    df = df[~df['Objet'].str.lower().str.contains('|'.join(excluded_words), na=False)]
+    df = df[df['Value'] != ''].reset_index(drop=True) # Filter out rows with no download value
+    print(f"Filtered down to {len(df)} relevant rows for download.")
+
+except Exception as e:
+    print(f"FATAL ERROR during scraping: {e}")
+    # Save debugging artifacts
+    driver.save_screenshot("error_page_scraping.png")
+    with open("error_page_scraping.html", "w", encoding="utf-8") as f:
+        f.write(driver.page_source)
+    driver.quit()
+    raise
+
+# --- PART 2: DOWNLOADING FILES ---
+print("\n--- PART 2: STARTING FILE DOWNLOADS ---")
+client = OpenAI(api_key=OPENAI_API_KEY)
+if df.empty:
+    print("No tenders to download after filtering. Exiting.")
+    driver.quit()
+    exit()
+
+for index, row in df.iterrows():
+    number = row['Value']
+    objet = row['Objet']
+    print(f"\nProcessing download {index + 1}/{len(df)} | Value: {number} | Objet: {objet[:50]}...")
+    try:
+        url = f'https://www.offresonline.com/Admin/telechargercps.aspx?http=N&i={number}&type=1&encour=1&p=p'
+        driver.get(url)
+        time.sleep(1)
+
+        print(f"  Taking screenshot for CAPTCHA...")
+        png = driver.find_element(By.TAG_NAME, "body").screenshot_as_png
+        b64 = base64.b64encode(png).decode("utf-8")
         
-        # Reorder columns to have important ones first
-        desired_order = ['Référence N°', 'Date de Publication', 'DATE LIMITE', 'ORGANISME', 'Objet', 'CAUTION', 'ESTIMATION FINANCIERE', 'VILLE(S)', 'CONTACT']
-        # Get existing columns and add the rest, avoiding errors if a column doesn't exist
-        existing_cols = [col for col in desired_order if col in df.columns]
-        other_cols = [col for col in df.columns if col not in existing_cols]
-        df = df[existing_cols + other_cols]
+        print("  Sending CAPTCHA to OpenAI for OCR...")
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Extract the text from this CAPTCHA image. Return only the characters."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+                ]
+            }],
+            max_tokens=10
+        )
+        captcha_code = response.choices[0].message.content.strip()
+        print(f"  OCR result for {number}: '{captcha_code}'")
+
+        captcha_input = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolder1_txtimgcode"))
+        )
+        captcha_input.send_keys(captcha_code)
+        driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_LinkButton1").click()
+        print(f"  Download button clicked for value {number}. Waiting for file to complete...")
+        time.sleep(15) # Increase wait time for download completion
+
+    except Exception as e:
+        print(f"  ERROR: Failed to download file for value {number}. Reason: {e}")
+        driver.save_screenshot(f"error_page_download_{number}.png")
+        with open(f"error_page_download_{number}.html", "w", encoding="utf-8") as f:
+            f.write(driver.page_source)
+        continue
+
+driver.quit()
+print("\nWebDriver closed. All download attempts are complete.")
+
+# --- PART 3: EXTRACTING TEXT FROM DOWNLOADED FILES ---
+print("\n--- PART 3: EXTRACTING TEXT FROM FILES ---")
+
+def extract_text_from_pdf(file_path):
+    text = ""
+    try:
+        doc = fitz.open(file_path)
+        for page in doc: text += page.get_text("text") + "\n"
+        doc.close()
+        if len(text.strip()) < 100:
+            print(f"    -> Short text from PDF. Attempting OCR...")
+            pages = convert_from_path(file_path)
+            ocr_text = ""
+            for p_img in pages: ocr_text += pytesseract.image_to_string(p_img, lang="fra+ara") + "\n"
+            return ocr_text.strip()
+        return text.strip()
+    except Exception as e:
+        print(f"    -> ERROR reading PDF {os.path.basename(file_path)}: {e}")
+        return ""
+
+def extract_text_from_docx(file_path):
+    try:
+        doc = docx.Document(file_path)
+        return "\n".join([p.text for p in doc.paragraphs])
+    except Exception as e:
+        print(f"    -> ERROR reading DOCX {os.path.basename(file_path)}: {e}")
+        return ""
+
+def extract_from_zip(file_path, tenders_dir):
+    try:
+        extract_to = os.path.join(tenders_dir, os.path.splitext(os.path.basename(file_path))[0])
+        os.makedirs(extract_to, exist_ok=True)
+        with zipfile.ZipFile(file_path, 'r') as zip_ref:
+            zip_ref.extractall(extract_to)
+        print(f"  Unzipped '{os.path.basename(file_path)}' successfully.")
+        os.remove(file_path)
+    except Exception as e:
+        print(f"  ERROR: Failed to unzip {os.path.basename(file_path)}: {e}")
+
+# Step 1: Unzip all ZIP files
+print("\nStep 1: Unzipping all downloaded .zip files...")
+for f in os.listdir(download_folder):
+    if f.lower().endswith(".zip"):
+        extract_from_zip(os.path.join(download_folder, f), download_folder)
+
+# Step 2: Process all folders and files for text extraction
+print("\nStep 2: Processing files and extracting text...")
+tender_results = []
+items_in_downloads = os.listdir(download_folder)
+if not items_in_downloads:
+    print("Download folder is empty. No files to process.")
+else:
+    for item_name in items_in_downloads:
+        item_path = os.path.join(download_folder, item_name)
+        merged_text = ""
+        print(f"\nProcessing item: '{item_name}'")
+
+        if os.path.isdir(item_path):
+            for root, _, files in os.walk(item_path):
+                for f in files:
+                    if 'cps' in f.lower():
+                        print(f"  -> Skipping file with 'cps' in name: {f}")
+                        continue
+                    file_path = os.path.join(root, f)
+                    ext = os.path.splitext(f)[1].lower()
+                    text = ""
+                    print(f"  -> Reading file: {f}")
+                    if ext == ".pdf": text = extract_text_from_pdf(file_path)
+                    elif ext == ".docx": text = extract_text_from_docx(file_path)
+                    if text.strip(): merged_text += f"\n\n--- Content from: {f} ---\n{text}"
+        
+        elif os.path.isfile(item_path):
+            if 'cps' in item_name.lower():
+                print(f"  -> Skipping file with 'cps' in name: {item_name}")
+                continue
+            ext = os.path.splitext(item_name)[1].lower()
+            text = ""
+            print(f"  -> Reading file: {item_name}")
+            if ext == ".pdf": text = extract_text_from_pdf(item_path)
+            elif ext == ".docx": text = extract_text_from_docx(item_path)
+            if text.strip(): merged_text += f"\n\n--- Content from: {item_name} ---\n{text}"
+
+        if merged_text.strip():
+            tender_results.append({"tender_folder": item_name, "merged_text": merged_text.strip()})
+            print(f"  Finished processing '{item_name}', extracted {len(merged_text)} characters.")
+
+# --- PART 4: SENDING DATA ---
+print("\n--- PART 4: FINALIZING AND SENDING DATA ---")
+if tender_results:
+    final_df = pd.DataFrame(tender_results)
+    print(f"Created final DataFrame with {len(final_df)} processed tenders.")
+    
+    final_df.to_csv("tender_results.csv", index=False)
+    print("Results saved to tender_results.csv for artifact upload.")
+
+    print("Converting DataFrame to JSON and sending to n8n webhook...")
+    json_data = final_df.to_dict(orient="records")
+    response = requests.post(N8N_WEBHOOK_URL, json=json_data)
+
+    if response.status_code == 200:
+        print("✅ Data sent successfully to n8n webhook!")
     else:
-        print("\nNo data was scraped. No output file created.")
+        print(f"❌ FAILED to send data. Status: {response.status_code}, Response: {response.text}")
+else:
+    print("No text was extracted from any documents. Nothing to send.")
 
-    # --- 6. CLEANUP ---
-    print("Closing the browser.")
-
+print("\n--- SCRIPT FINISHED ---")
