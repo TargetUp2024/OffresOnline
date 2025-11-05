@@ -30,7 +30,7 @@ print("--- SCRIPT STARTED ---")
 OFFRES_USERNAME = "TARGETUP"
 OFFRES_PASSWORD = "TARGETUP2024"
 OPENAI_API_KEY = "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"
-N8N_WEBHOOK_URL = "https://targetup.app.n8n.cloud/webhook-test/dc4cf7c8-b44e-4404-830d-ef7cf3e7b6ca"
+N8N_WEBHOOK_URL = "https://targetup.app.n8n.cloud/webhook/dc4cf7c8-b44e-4404-830d-ef7cf3e7b6ca"
 
 print("Credentials and configuration loaded.")
 
