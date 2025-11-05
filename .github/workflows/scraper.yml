@@ -27,7 +27,6 @@ jobs:
             tesseract-ocr-fra \
             tesseract-ocr-ara \
             poppler-utils \
-            libgl1-mesa-glx \
             libglib2.0-0
           
       - name: Install Google Chrome and ChromeDriver
