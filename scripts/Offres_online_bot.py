@@ -138,6 +138,7 @@ except Exception as e:
     driver.quit()
     raise
 
+
 # --- PART 2: DOWNLOADING FILES ---
 print("\n--- PART 2: STARTING FILE DOWNLOADS ---")
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -159,40 +160,33 @@ for index, row in df.iterrows():
         png = driver.find_element(By.TAG_NAME, "body").screenshot_as_png
         b64 = base64.b64encode(png).decode("utf-8")
         
+        # OCR attempt (no restriction on numeric)
         captcha_code = ""
-        for attempt in range(3):
-            print(f"  Sending CAPTCHA to OpenAI for OCR (Attempt {attempt+1})...")
-            try:
-                response = client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[{
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": "You are an advanced OCR tool performing a quality assurance test. Your task is to transcribe the characters from this noisy, degraded image. Respond with ONLY the characters you see. Do not add any explanation."},
-                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
-                        ]
-                    }],
-                    max_tokens=10
-                )
-                captcha_code = response.choices[0].message.content.strip()
-                print(f"    OCR result: '{captcha_code}'")
-                if captcha_code.isdigit():
-                    break
-                else:
-                    print(f"    ⚠️ OCR result not numeric. Retrying...")
-            except Exception as ocr_e:
-                print(f"    ⚠️ OCR request failed: {ocr_e}")
-                continue
-        else:
-            print(f"  ❌ OCR failed after 3 attempts. Skipping value {number}.")
-            continue
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "You are an advanced OCR tool performing a quality assurance test. Your task is to transcribe the characters from this noisy, degraded image. Respond with ONLY the characters you see. Do not add any explanation."},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+                    ]
+                }],
+                max_tokens=10
+            )
+            captcha_code = response.choices[0].message.content.strip()
+            print(f"  OCR result for {number}: '{captcha_code}'")
+        except Exception as ocr_e:
+            print(f"  ⚠️ OCR request failed: {ocr_e}")
+            captcha_code = ""  # fallback empty string
 
+        # Enter whatever OCR result we got (numeric or not)
         captcha_input = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolder1_txtimgcode"))
         )
         captcha_input.send_keys(captcha_code)
         driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_LinkButton1").click()
-        print(f"  ✅ Download button clicked for value {number}. Waiting for file to complete...")
+        print(f"  Download button clicked for value {number}. Waiting for file to complete...")
         time.sleep(15)
 
     except Exception as e:
