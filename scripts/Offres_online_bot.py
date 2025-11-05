@@ -11,7 +11,6 @@ from pdf2image import convert_from_path
 from PIL import Image
 import pytesseract
 import docx
-import traceback
 from bs4 import BeautifulSoup as bs
 
 from selenium import webdriver
@@ -19,10 +18,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import (
-    TimeoutException,
-    NoSuchElementException
-)
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 
@@ -38,13 +34,13 @@ N8N_WEBHOOK_URL = "https://targetup.app.n8n.cloud/webhook-test/dc4cf7c8-b44e-440
 
 print("Credentials and configuration loaded.")
 
-# --- Setup download folder within the GitHub Actions workspace ---
-workspace_path = os.getcwd() # Gets the current working directory in the runner
+# --- Setup download folder ---
+workspace_path = os.getcwd()
 download_folder = os.path.join(workspace_path, "downloads")
 os.makedirs(download_folder, exist_ok=True)
 print(f"Download folder created at: {download_folder}")
 
-# --- Chrome options for headless execution in GitHub Actions ---
+# --- Chrome options ---
 chrome_options = Options()
 chrome_options.add_argument("--headless")
 chrome_options.add_argument("--no-sandbox")
@@ -64,7 +60,6 @@ try:
     driver = webdriver.Chrome(options=chrome_options)
     print("WebDriver started successfully in headless mode.")
 
-    print("Navigating to https://www.offresonline.com/")
     driver.get("https://www.offresonline.com/")
     time.sleep(2)
 
@@ -94,7 +89,6 @@ try:
     all_data = []
     for i, row in enumerate(rows):
         try:
-            # Using find_elements to avoid exceptions and check length
             td_list = row.find_elements(By.TAG_NAME, "td")
             if len(td_list) < 6:
                 print(f"  Row {i+1}: Skipping malformed row with {len(td_list)} cells.")
@@ -108,25 +102,24 @@ try:
             
             value = ""
             try:
-                # Check both possible input titles
                 input_element = row.find_element(By.XPATH, ".//input[@title='Marquer comme Lu ?' or @title='Déja vu']")
                 value = input_element.get_attribute("value")
             except NoSuchElementException:
-                value = "" # No download link found
+                value = "" 
 
             all_data.append({'Objet': objet, 'Value': value})
 
         except Exception as e:
-            print(f"  Row {i+1}: Skipping row due to an unexpected error: {e}")
+            print(f"  Row {i+1}: Skipping row due to unexpected error: {e}")
             continue
     
     if not all_data:
-        print("WARNING: No data was scraped from the table. Exiting script.")
+        print("WARNING: No data was scraped. Exiting.")
         driver.quit()
         exit()
 
     df = pd.DataFrame(all_data)
-    print(f"Successfully created DataFrame with {len(df)} initial rows.")
+    print(f"Created DataFrame with {len(df)} initial rows.")
 
     excluded_words = [
         "construction", "installation", "recrutement", "travaux", "fourniture", "achat", 
@@ -134,12 +127,11 @@ try:
         "recruitment", "nettoyage", "gardiennage"
     ]
     df = df[~df['Objet'].str.lower().str.contains('|'.join(excluded_words), na=False)]
-    df = df[df['Value'] != ''].reset_index(drop=True) # Filter out rows with no download value
-    print(f"Filtered down to {len(df)} relevant rows for download.")
+    df = df[df['Value'] != ''].reset_index(drop=True)
+    print(f"Filtered to {len(df)} relevant rows for download.")
 
 except Exception as e:
     print(f"FATAL ERROR during scraping: {e}")
-    # Save debugging artifacts
     driver.save_screenshot("error_page_scraping.png")
     with open("error_page_scraping.html", "w", encoding="utf-8") as f:
         f.write(driver.page_source)
@@ -167,38 +159,51 @@ for index, row in df.iterrows():
         png = driver.find_element(By.TAG_NAME, "body").screenshot_as_png
         b64 = base64.b64encode(png).decode("utf-8")
         
-        print("  Sending CAPTCHA to OpenAI for OCR...")
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "You are an advanced OCR tool performing a quality assurance test. Your task is to transcribe the characters from this noisy, degraded image. Respond with ONLY the characters you see. Do not add any explanation."},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
-                ]
-            }],
-            max_tokens=10
-        )
-        captcha_code = response.choices[0].message.content.strip()
-        print(f"  OCR result for {number}: '{captcha_code}'")
+        captcha_code = ""
+        for attempt in range(3):
+            print(f"  Sending CAPTCHA to OpenAI for OCR (Attempt {attempt+1})...")
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "You are an advanced OCR tool performing a quality assurance test. Your task is to transcribe the characters from this noisy, degraded image. Respond with ONLY the characters you see. Do not add any explanation."},
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+                        ]
+                    }],
+                    max_tokens=10
+                )
+                captcha_code = response.choices[0].message.content.strip()
+                print(f"    OCR result: '{captcha_code}'")
+                if captcha_code.isdigit():
+                    break
+                else:
+                    print(f"    ⚠️ OCR result not numeric. Retrying...")
+            except Exception as ocr_e:
+                print(f"    ⚠️ OCR request failed: {ocr_e}")
+                continue
+        else:
+            print(f"  ❌ OCR failed after 3 attempts. Skipping value {number}.")
+            continue
 
         captcha_input = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolder1_txtimgcode"))
         )
         captcha_input.send_keys(captcha_code)
         driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_LinkButton1").click()
-        print(f"  Download button clicked for value {number}. Waiting for file to complete...")
-        time.sleep(15) # Increase wait time for download completion
+        print(f"  ✅ Download button clicked for value {number}. Waiting for file to complete...")
+        time.sleep(15)
 
     except Exception as e:
-        print(f"  ERROR: Failed to download file for value {number}. Reason: {e}")
+        print(f"  ERROR: Failed download for value {number}: {e}")
         driver.save_screenshot(f"error_page_download_{number}.png")
         with open(f"error_page_download_{number}.html", "w", encoding="utf-8") as f:
             f.write(driver.page_source)
         continue
 
 driver.quit()
-print("\nWebDriver closed. All download attempts are complete.")
+print("\nWebDriver closed. All download attempts complete.")
 
 # --- PART 3: EXTRACTING TEXT FROM DOWNLOADED FILES ---
 print("\n--- PART 3: EXTRACTING TEXT FROM FILES ---")
@@ -207,13 +212,15 @@ def extract_text_from_pdf(file_path):
     text = ""
     try:
         doc = fitz.open(file_path)
-        for page in doc: text += page.get_text("text") + "\n"
+        for page in doc:
+            text += page.get_text("text") + "\n"
         doc.close()
         if len(text.strip()) < 100:
-            print(f"    -> Short text from PDF. Attempting OCR...")
+            print(f"    -> Short PDF text. Performing OCR...")
             pages = convert_from_path(file_path)
             ocr_text = ""
-            for p_img in pages: ocr_text += pytesseract.image_to_string(p_img, lang="fra+ara") + "\n"
+            for p_img in pages:
+                ocr_text += pytesseract.image_to_string(p_img, lang="fra+ara") + "\n"
             return ocr_text.strip()
         return text.strip()
     except Exception as e:
@@ -234,18 +241,18 @@ def extract_from_zip(file_path, tenders_dir):
         os.makedirs(extract_to, exist_ok=True)
         with zipfile.ZipFile(file_path, 'r') as zip_ref:
             zip_ref.extractall(extract_to)
-        print(f"  Unzipped '{os.path.basename(file_path)}' successfully.")
+        print(f"  Unzipped '{os.path.basename(file_path)}'.")
         os.remove(file_path)
     except Exception as e:
         print(f"  ERROR: Failed to unzip {os.path.basename(file_path)}: {e}")
 
-# Step 1: Unzip all ZIP files
+# Unzip all downloaded .zip files
 print("\nStep 1: Unzipping all downloaded .zip files...")
 for f in os.listdir(download_folder):
     if f.lower().endswith(".zip"):
         extract_from_zip(os.path.join(download_folder, f), download_folder)
 
-# Step 2: Process all folders and files for text extraction
+# Process all files/folders for text
 print("\nStep 2: Processing files and extracting text...")
 tender_results = []
 items_in_downloads = os.listdir(download_folder)
@@ -261,7 +268,7 @@ else:
             for root, _, files in os.walk(item_path):
                 for f in files:
                     if 'cps' in f.lower():
-                        print(f"  -> Skipping file with 'cps' in name: {f}")
+                        print(f"  -> Skipping 'cps' file: {f}")
                         continue
                     file_path = os.path.join(root, f)
                     ext = os.path.splitext(f)[1].lower()
@@ -273,7 +280,7 @@ else:
         
         elif os.path.isfile(item_path):
             if 'cps' in item_name.lower():
-                print(f"  -> Skipping file with 'cps' in name: {item_name}")
+                print(f"  -> Skipping 'cps' file: {item_name}")
                 continue
             ext = os.path.splitext(item_name)[1].lower()
             text = ""
@@ -284,7 +291,7 @@ else:
 
         if merged_text.strip():
             tender_results.append({"tender_folder": item_name, "merged_text": merged_text.strip()})
-            print(f"  Finished processing '{item_name}', extracted {len(merged_text)} characters.")
+            print(f"  Finished '{item_name}', extracted {len(merged_text)} characters.")
 
 # --- PART 4: SENDING DATA ---
 print("\n--- PART 4: FINALIZING AND SENDING DATA ---")
@@ -293,7 +300,7 @@ if tender_results:
     print(f"Created final DataFrame with {len(final_df)} processed tenders.")
     
     final_df.to_csv("tender_results.csv", index=False)
-    print("Results saved to tender_results.csv for artifact upload.")
+    print("Results saved to tender_results.csv.")
 
     print("Converting DataFrame to JSON and sending to n8n webhook...")
     json_data = final_df.to_dict(orient="records")
@@ -304,6 +311,6 @@ if tender_results:
     else:
         print(f"❌ FAILED to send data. Status: {response.status_code}, Response: {response.text}")
 else:
-    print("No text was extracted from any documents. Nothing to send.")
+    print("No text was extracted. Nothing to send.")
 
 print("\n--- SCRIPT FINISHED ---")
