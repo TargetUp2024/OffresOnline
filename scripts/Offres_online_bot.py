@@ -37,7 +37,6 @@ print("Credentials and configuration loaded.")
 # --- Setup download folder ---
 workspace_path = os.getcwd()
 download_folder = os.path.join(workspace_path, "downloads")
-# Clean the downloads folder before starting
 if os.path.exists(download_folder):
     shutil.rmtree(download_folder)
 os.makedirs(download_folder, exist_ok=True)
@@ -58,19 +57,26 @@ chrome_options.add_experimental_option("prefs", {
 
 # --- Helper Functions ---
 
-def wait_for_download_complete(directory, timeout=90):
-    """Waits for a new download to complete in the specified directory."""
+def wait_for_new_file(directory, initial_files, timeout=90):
+    """
+    Waits for a new, completed file to appear in the directory.
+    Returns the full path of the new file, or None if timed out.
+    """
     seconds = 0
     while seconds < timeout:
-        if any(f.endswith('.crdownload') for f in os.listdir(directory)):
-            time.sleep(1)
-            seconds += 1
-        else:
-            time.sleep(2) # Extra wait to ensure file is fully written
-            print("  Download appears complete.")
-            return True
-    print(f"  ⚠️ DOWNLOAD TIMEOUT after {timeout} seconds.")
-    return False
+        current_files = set(os.listdir(directory))
+        new_files = current_files - initial_files
+        # Check if there is a new file that is not a temporary .crdownload file
+        for f in new_files:
+            if not f.endswith('.crdownload'):
+                # Give a moment for the file write to fully complete
+                time.sleep(2)
+                print(f"  ✅ New file detected: {f}")
+                return os.path.join(directory, f)
+        time.sleep(1)
+        seconds += 1
+    print(f"  ⚠️ DOWNLOAD TIMEOUT: No new completed file appeared in {timeout} seconds.")
+    return None
 
 def extract_text_from_pdf(file_path):
     text = ""
@@ -79,7 +85,7 @@ def extract_text_from_pdf(file_path):
             for page in doc:
                 text += page.get_text("text") + "\n"
         if len(text.strip()) < 150:
-            print("    -> Short PDF text found, falling back to OCR.")
+            print("    -> Short PDF text, trying OCR.")
             raise Exception("Short text, try OCR")
         return text.strip()
     except Exception:
@@ -110,7 +116,6 @@ def extract_text_from_csv(file_path):
         return ""
 
 def process_file_for_text(file_path):
-    """Processes a single file and returns its text content."""
     ext = os.path.splitext(file_path)[1].lower()
     print(f"  -> Reading file: {os.path.basename(file_path)}")
     if ext == ".pdf": return extract_text_from_pdf(file_path)
@@ -119,13 +124,10 @@ def process_file_for_text(file_path):
     return ""
 
 def cleanup_files(paths_to_delete):
-    """Safely removes files and directories."""
     for path in paths_to_delete:
         try:
-            if os.path.isfile(path):
-                os.remove(path)
-            elif os.path.isdir(path):
-                shutil.rmtree(path)
+            if os.path.isfile(path): os.remove(path)
+            elif os.path.isdir(path): shutil.rmtree(path)
         except OSError as e:
             print(f"  Error during cleanup of {path}: {e}")
 
@@ -210,51 +212,50 @@ else:
             png = driver.find_element(By.TAG_NAME, "body").screenshot_as_png
             b64 = base64.b64encode(png).decode("utf-8")
             
+            prompt_text = "You are an automated OCR engine. Your sole task is to transcribe the characters from the provided image. Your entire output MUST consist ONLY of the characters you see. Do not add any words, labels, explanations, or punctuation."
             response = client.chat.completions.create(
                 model="gpt-4o",
-                messages=[{"role": "user", "content": [{"type": "text", "text": "Transcribe the characters in the image. Respond with ONLY the characters."}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}]}],
+                messages=[{"role": "user", "content": [{"type": "text", "text": prompt_text}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}]}],
                 max_tokens=10
             )
-            captcha_code = response.choices[0].message.content.strip()
-            print(f"  OCR Result: '{captcha_code}'")
+            raw_captcha = response.choices[0].message.content.strip()
+            captcha_code = re.sub(r'[^a-zA-Z0-9]', '', raw_captcha)
+            print(f"  OCR Result (Sanitized): '{captcha_code}'")
 
             driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_txtimgcode").send_keys(captcha_code)
             driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_LinkButton1").click()
-            print("  Download initiated. Waiting for completion...")
+            print("  Download initiated. Waiting for a new file to appear...")
             
-            if not wait_for_download_complete(download_folder):
+            # Step 2: Reliably wait for and identify the new file
+            new_file_path = wait_for_new_file(download_folder, files_before)
+            if not new_file_path:
+                print("  Skipping tender as download failed or timed out.")
+                driver.save_screenshot(f"error_download_{number}.png") # Save screenshot for debugging
                 continue
             
-            # Step 2: Identify and Extract Text from new file(s)
-            files_after = set(os.listdir(download_folder))
-            new_files = files_after - files_before
-            if not new_files:
-                print("  No new file detected after download. Skipping.")
-                continue
-
+            # Step 3: Extract Text from the downloaded file
+            paths_to_clean.append(new_file_path)
             merged_text = ""
-            for new_file_name in new_files:
-                file_path = os.path.join(download_folder, new_file_name)
-                paths_to_clean.append(file_path)
+            file_name = os.path.basename(new_file_path)
+
+            if file_name.lower().endswith(".zip"):
+                extract_dir = os.path.join(download_folder, os.path.splitext(file_name)[0])
+                paths_to_clean.append(extract_dir)
+                with zipfile.ZipFile(new_file_path, 'r') as zf:
+                    zf.extractall(extract_dir)
+                print(f"  Unzipped '{file_name}'.")
                 
-                if new_file_name.lower().endswith(".zip"):
-                    extract_dir = os.path.join(download_folder, os.path.splitext(new_file_name)[0])
-                    paths_to_clean.append(extract_dir)
-                    with zipfile.ZipFile(file_path, 'r') as zf:
-                        zf.extractall(extract_dir)
-                    print(f"  Unzipped '{new_file_name}'.")
-                    
-                    for root, _, files in os.walk(extract_dir):
-                        for f in files:
-                            if 'cps' in f.lower(): continue
-                            text = process_file_for_text(os.path.join(root, f))
-                            if text: merged_text += f"\n\n--- Content from: {f} ---\n{text}"
-                else: # Not a zip file
-                     if 'cps' not in new_file_name.lower():
-                        text = process_file_for_text(file_path)
-                        if text: merged_text += f"\n\n--- Content from: {new_file_name} ---\n{text}"
+                for root, _, files in os.walk(extract_dir):
+                    for f in files:
+                        if 'cps' in f.lower(): continue
+                        text = process_file_for_text(os.path.join(root, f))
+                        if text: merged_text += f"\n\n--- Content from: {f} ---\n{text}"
+            else:
+                 if 'cps' not in file_name.lower():
+                    text = process_file_for_text(new_file_path)
+                    if text: merged_text += f"\n\n--- Content from: {file_name} ---\n{text}"
             
-            # Step 3: Send Data to n8n Webhook
+            # Step 4: Send Data to n8n Webhook
             if merged_text.strip():
                 print(f"  Extracted {len(merged_text)} characters. Sending to webhook...")
                 payload = {
@@ -263,7 +264,6 @@ else:
                     'Organisme': organisme,
                     'merged_text': merged_text.strip()
                 }
-                # n8n expects a list of items, so we send a list containing our single payload
                 response = requests.post(N8N_WEBHOOK_URL, json=[payload], timeout=30)
                 response.raise_for_status()
                 print(f"  ✅ SUCCESS: Tender {number} sent to n8n.")
@@ -274,7 +274,7 @@ else:
             print(f"  ❌ FAILED to process tender {number}: {e}")
         
         finally:
-            # Step 4: Clean up and Wait
+            # Step 5: Clean up and Wait
             print(f"  Cleaning up files for tender {number}...")
             cleanup_files(paths_to_clean)
             print("  Waiting 10 seconds before next tender...")
