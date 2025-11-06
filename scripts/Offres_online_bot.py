@@ -112,6 +112,7 @@ def process_file_for_text(file_path):
     if ext == ".pdf": return extract_text_from_pdf(file_path)
     elif ext in [".docx", ".doc"]: return extract_text_from_docx(file_path)
     elif ext == ".csv": return extract_text_from_csv(file_path)
+    # This function intentionally ignores .zip, as it's handled by the recursive processor
     return ""
 
 def cleanup_files(paths_to_delete):
@@ -121,6 +122,45 @@ def cleanup_files(paths_to_delete):
             elif os.path.isdir(path): shutil.rmtree(path)
         except OSError as e:
             print(f"  Error during cleanup of {path}: {e}")
+
+
+# --- NEW RECURSIVE FUNCTION TO HANDLE NESTED ZIPS ---
+def process_directory_recursively(directory_path, paths_to_clean):
+    """
+    Recursively processes files in a directory. If a file is a zip,
+    it extracts it and processes the contents recursively.
+    """
+    merged_text = ""
+    for item_name in os.listdir(directory_path):
+        item_path = os.path.join(directory_path, item_name)
+
+        if os.path.isdir(item_path):
+            # If it's a directory, dive into it
+            merged_text += process_directory_recursively(item_path, paths_to_clean)
+        
+        elif item_name.lower().endswith('.zip'):
+            # If it's a nested zip file, extract and process
+            print(f"  -- Found nested zip: {item_name}. Extracting...")
+            nested_extract_dir = os.path.join(directory_path, os.path.splitext(item_name)[0])
+            os.makedirs(nested_extract_dir, exist_ok=True)
+            paths_to_clean.append(nested_extract_dir) # Add to cleanup list
+            try:
+                with zipfile.ZipFile(item_path, 'r') as zf:
+                    zf.extractall(nested_extract_dir)
+                # Recursively process the newly extracted files
+                merged_text += process_directory_recursively(nested_extract_dir, paths_to_clean)
+            except zipfile.BadZipFile:
+                print(f"    -> WARNING: Could not open nested zip file {item_name}. It might be corrupted.")
+                
+        else:
+            # It's a regular file (PDF, DOCX, etc.)
+            if 'cps' not in item_name.lower():
+                text = process_file_for_text(item_path)
+                if text:
+                    merged_text += f"\n\n--- Content from: {item_name} ---\n{text}"
+
+    return merged_text
+
 
 # --- PART 1: SCRAPING TENDER INFORMATION ---
 print("\n--- PART 1: STARTING BROWSER AND SCRAPING ---")
@@ -231,26 +271,19 @@ else:
             merged_text = ""
             file_name = os.path.basename(new_file_path)
 
-            # Step 2: Unzip if ZIP
+            # Step 2: Unzip if ZIP (MODIFIED PART)
             if file_name.lower().endswith(".zip"):
                 extract_dir = os.path.join(download_folder, os.path.splitext(file_name)[0])
                 os.makedirs(extract_dir, exist_ok=True)
                 paths_to_clean.append(extract_dir)
                 with zipfile.ZipFile(new_file_path, 'r') as zf:
                     zf.extractall(extract_dir)
-                print(f"  Unzipped '{file_name}' into folder '{extract_dir}'")
+                print(f"  Unzipped '{file_name}' into folder '{os.path.basename(extract_dir)}'")
 
-                # Step 3: Process each file inside ZIP
-                zip_files = [f for f in os.listdir(extract_dir) if os.path.isfile(os.path.join(extract_dir, f))]
-                for i, f in enumerate(zip_files, start=1):
-                    file_path = os.path.join(extract_dir, f)
-                    print(f"    Extracting file {i}/{len(zip_files)}: {f}")
-                    if 'cps' in f.lower(): continue
-                    text = process_file_for_text(file_path)
-                    if text:
-                        merged_text += f"\n\n--- Content from: {f} ---\n{text}"
+                # Step 3: Process the directory recursively
+                merged_text = process_directory_recursively(extract_dir, paths_to_clean)
 
-            else:
+            else: # If the downloaded file is not a zip
                 if 'cps' not in file_name.lower():
                     text = process_file_for_text(new_file_path)
                     if text:
