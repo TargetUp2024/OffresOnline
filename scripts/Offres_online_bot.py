@@ -21,16 +21,19 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.chrome.options import Options
-
+import os
 from openai import OpenAI
 
 print("--- SCRIPT STARTED ---")
 
 # --- Credentials and Configuration ---
-OFFRES_USERNAME = "TARGETUP"
-OFFRES_PASSWORD = "TARGETUP2024"
-OPENAI_API_KEY = "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"
-N8N_WEBHOOK_URL = "https://targetup.app.n8n.cloud/webhook/dc4cf7c8-b44e-4404-830d-ef7cf3e7b6ca"
+
+
+# --- Credentials and Configuration (Loaded Securely from Environment Variables) ---
+USERNAME = os.getenv("USERNAME")
+PASSWORD = os.getenv("PASSWORD")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL")
 
 print("Credentials and configuration loaded.")
 
