@@ -1,7 +1,6 @@
 import os
 import time
 import re
-import glob
 import base64
 import pandas as pd
 import requests
@@ -15,21 +14,16 @@ import shutil
 from bs4 import BeautifulSoup as bs
 
 from selenium import webdriver
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.chrome.options import Options
-import os
 from openai import OpenAI
 
 print("--- SCRIPT STARTED ---")
 
-# --- Credentials and Configuration ---
-
-
-# --- Credentials and Configuration (Loaded Securely from Environment Variables) ---
+# --- Credentials and Config ---
 USERNAME = os.getenv("USERNAME")
 PASSWORD = os.getenv("PASSWORD")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -61,19 +55,13 @@ chrome_options.add_experimental_option("prefs", {
 # --- Helper Functions ---
 
 def wait_for_new_file(directory, initial_files, timeout=90):
-    """
-    Waits for a new, completed file to appear in the directory.
-    Returns the full path of the new file, or None if timed out.
-    """
     seconds = 0
     while seconds < timeout:
         current_files = set(os.listdir(directory))
         new_files = current_files - initial_files
-        # Check if there is a new file that is not a temporary .crdownload file
         for f in new_files:
-            if not f.endswith('.crdownload'):
-                # Give a moment for the file write to fully complete
-                time.sleep(2)
+            if not f.endswith(".crdownload"):
+                time.sleep(2)  # ensure file is fully written
                 print(f"  ✅ New file detected: {f}")
                 return os.path.join(directory, f)
         time.sleep(1)
@@ -88,7 +76,7 @@ def extract_text_from_pdf(file_path):
             for page in doc:
                 text += page.get_text("text") + "\n"
         if len(text.strip()) < 150:
-            print("    -> Short PDF text, trying OCR.")
+            print("    -> Short PDF text, using OCR fallback.")
             raise Exception("Short text, try OCR")
         return text.strip()
     except Exception:
@@ -138,16 +126,16 @@ def cleanup_files(paths_to_delete):
 print("\n--- PART 1: STARTING BROWSER AND SCRAPING ---")
 driver = None
 try:
-    print("Initializing WebDriver...")
     driver = webdriver.Chrome(options=chrome_options)
     print("WebDriver started successfully.")
     
     driver.get("https://www.offresonline.com/")
     time.sleep(2)
+    
     driver.find_element(By.CSS_SELECTOR, "#main-nav > ul > li:nth-child(2)").click()
     time.sleep(1)
-    driver.find_element(By.CSS_SELECTOR, "#Login").send_keys(OFFRES_USERNAME)
-    driver.find_element(By.CSS_SELECTOR, "#pwd").send_keys(OFFRES_PASSWORD)
+    driver.find_element(By.CSS_SELECTOR, "#Login").send_keys(USERNAME)
+    driver.find_element(By.CSS_SELECTOR, "#pwd").send_keys(PASSWORD)
     driver.find_element(By.CSS_SELECTOR, "#buuuttt").click()
     print("Login successful.")
     time.sleep(2)
@@ -155,7 +143,9 @@ try:
     driver.find_element(By.CSS_SELECTOR, "#ctl00_Linkf30").click()
     print("Navigating to 'AO de Jour' (Daily Tenders)...")
     
-    table_body = WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.XPATH, '//*[@id="tableao"]/tbody')))
+    table_body = WebDriverWait(driver, 15).until(
+        EC.presence_of_element_located((By.XPATH, '//*[@id="tableao"]/tbody'))
+    )
     rows = table_body.find_elements(By.TAG_NAME, "tr")
     print(f"Found {len(rows)} rows in the tender table.")
 
@@ -163,18 +153,15 @@ try:
     for row in rows:
         td_list = row.find_elements(By.TAG_NAME, "td")
         if len(td_list) < 6: continue
-        
         soup = bs(td_list[2].get_attribute('innerHTML'), 'html.parser')
         strong_tags = soup.find_all('strong')
         organisme = strong_tags[0].get_text(strip=True) if strong_tags else ''
         objet = strong_tags[1].get_text(strip=True) if len(strong_tags) > 1 else ''
-        
         value = ""
         try:
             input_el = row.find_element(By.XPATH, ".//input[@title='Marquer comme Lu ?' or @title='Déja vu']")
             value = input_el.get_attribute("value")
         except NoSuchElementException: continue
-        
         if objet and value:
             all_data.append({'Objet': objet, 'Value': value, 'Organisme': organisme})
 
@@ -184,7 +171,10 @@ try:
     df = pd.DataFrame(all_data)
     print(f"Created DataFrame with {len(df)} initial tenders.")
 
-    excluded_words = ["construction", "installation", "recrutement", "travaux", "fourniture", "achat", "equipement", "maintenance", "works", "goods", "supply", "acquisition", "recruitment", "nettoyage", "gardiennage"]
+    excluded_words = ["construction", "installation", "recrutement", "travaux",
+                      "fourniture", "achat", "equipement", "maintenance",
+                      "works", "goods", "supply", "acquisition", "recruitment",
+                      "nettoyage", "gardiennage"]
     df = df[~df['Objet'].str.lower().str.contains('|'.join(excluded_words), na=False)].reset_index(drop=True)
     print(f"Filtered to {len(df)} relevant tenders.")
 
@@ -193,7 +183,7 @@ except Exception as e:
     if driver: driver.quit()
     raise
 
-# --- PART 2: SEQUENTIAL PROCESSING (DOWNLOAD, EXTRACT, SEND) ---
+# --- PART 2: PROCESSING TENDERS ---
 print("\n--- PART 2: STARTING SEQUENTIAL TENDER PROCESSING ---")
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -206,7 +196,7 @@ else:
         
         paths_to_clean = []
         try:
-            # Step 1: Download the file(s)
+            # Step 1: Download file
             files_before = set(os.listdir(download_folder))
             url = f'https://www.offresonline.com/Admin/telechargercps.aspx?http=N&i={number}&type=1&encour=1&p=p'
             driver.get(url)
@@ -215,10 +205,12 @@ else:
             png = driver.find_element(By.TAG_NAME, "body").screenshot_as_png
             b64 = base64.b64encode(png).decode("utf-8")
             
-            prompt_text = "You are an automated OCR engine. Your sole task is to transcribe the characters from the provided image. Your entire output MUST consist ONLY of the characters you see. Do not add any words, labels, explanations, or punctuation."
+            prompt_text = "You are an automated OCR engine. Output only the characters seen in the image."
             response = client.chat.completions.create(
                 model="gpt-4o",
-                messages=[{"role": "user", "content": [{"type": "text", "text": prompt_text}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}]}],
+                messages=[{"role": "user", "content": [
+                    {"type": "text", "text": prompt_text},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}]}],
                 max_tokens=10
             )
             raw_captcha = response.choices[0].message.content.strip()
@@ -227,46 +219,47 @@ else:
 
             driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_txtimgcode").send_keys(captcha_code)
             driver.find_element(By.ID, "ctl00_ContentPlaceHolder1_LinkButton1").click()
-            print("  Download initiated. Waiting for a new file to appear...")
+            print("  Download initiated. Waiting for new file...")
             
-            # Step 2: Reliably wait for and identify the new file
             new_file_path = wait_for_new_file(download_folder, files_before)
             if not new_file_path:
                 print("  Skipping tender as download failed or timed out.")
-                driver.save_screenshot(f"error_download_{number}.png") # Save screenshot for debugging
+                driver.save_screenshot(f"error_download_{number}.png")
                 continue
             
-            # Step 3: Extract Text from the downloaded file
             paths_to_clean.append(new_file_path)
             merged_text = ""
             file_name = os.path.basename(new_file_path)
 
+            # Step 2: Unzip if ZIP
             if file_name.lower().endswith(".zip"):
                 extract_dir = os.path.join(download_folder, os.path.splitext(file_name)[0])
+                os.makedirs(extract_dir, exist_ok=True)
                 paths_to_clean.append(extract_dir)
                 with zipfile.ZipFile(new_file_path, 'r') as zf:
                     zf.extractall(extract_dir)
-                print(f"  Unzipped '{file_name}'.")
-                
-                for root, _, files in os.walk(extract_dir):
-                    for f in files:
-                        if 'cps' in f.lower(): continue
-                        text = process_file_for_text(os.path.join(root, f))
-                        if text: merged_text += f"\n\n--- Content from: {f} ---\n{text}"
+                print(f"  Unzipped '{file_name}' into folder '{extract_dir}'")
+
+                # Step 3: Process each file inside ZIP
+                zip_files = [f for f in os.listdir(extract_dir) if os.path.isfile(os.path.join(extract_dir, f))]
+                for i, f in enumerate(zip_files, start=1):
+                    file_path = os.path.join(extract_dir, f)
+                    print(f"    Extracting file {i}/{len(zip_files)}: {f}")
+                    if 'cps' in f.lower(): continue
+                    text = process_file_for_text(file_path)
+                    if text:
+                        merged_text += f"\n\n--- Content from: {f} ---\n{text}"
+
             else:
-                 if 'cps' not in file_name.lower():
+                if 'cps' not in file_name.lower():
                     text = process_file_for_text(new_file_path)
-                    if text: merged_text += f"\n\n--- Content from: {file_name} ---\n{text}"
-            
-            # Step 4: Send Data to n8n Webhook
+                    if text:
+                        merged_text += f"\n\n--- Content from: {file_name} ---\n{text}"
+
+            # Step 4: Send to webhook
             if merged_text.strip():
                 print(f"  Extracted {len(merged_text)} characters. Sending to webhook...")
-                payload = {
-                    'Objet': objet,
-                    'Value': number,
-                    'Organisme': organisme,
-                    'merged_text': merged_text.strip()
-                }
+                payload = {'Objet': objet, 'Value': number, 'Organisme': organisme, 'merged_text': merged_text.strip()}
                 response = requests.post(N8N_WEBHOOK_URL, json=[payload], timeout=30)
                 response.raise_for_status()
                 print(f"  ✅ SUCCESS: Tender {number} sent to n8n.")
@@ -275,9 +268,8 @@ else:
 
         except Exception as e:
             print(f"  ❌ FAILED to process tender {number}: {e}")
-        
+
         finally:
-            # Step 5: Clean up and Wait
             print(f"  Cleaning up files for tender {number}...")
             cleanup_files(paths_to_clean)
             print("  Waiting 10 seconds before next tender...")
