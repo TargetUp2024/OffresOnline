@@ -1,14 +1,20 @@
 name: Run Tender Bot
 
 on:
-  workflow_dispatch: # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:  # Allows manual trigger from Actions tab
   schedule:
-      - cron: "0 5 * * *"  # 3:00 AM UTC = 4:00 AM GMT+1 # Runs at 8:00 AM UTC, Monday to Friday
+    - cron: "0 6 * * *"  # 6:00 AM UTC = 7:00 AM GMT+1, runs daily
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 30 # Set a timeout to prevent long runs
+    timeout-minutes: 60  # Increased timeout for long downloads or OCR
+
+    env:
+      USERNAME: ${{ secrets.OFFRES_USERNAME }}
+      PASSWORD: ${{ secrets.OFFRES_PASSWORD }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      N8N_WEBHOOK_URL: ${{ secrets.N8N_WEBHOOK_URL }}
 
     steps:
       - name: Checkout repository
@@ -19,7 +25,7 @@ jobs:
         with:
           python-version: "3.9"
 
-      - name: Install System Dependencies for Headless Chrome and OCR
+      - name: Install System Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -27,40 +33,42 @@ jobs:
             tesseract-ocr-fra \
             tesseract-ocr-ara \
             poppler-utils \
-            libglib2.0-0
-          
+            libglib2.0-0 \
+            unzip \
+            wget \
+            curl \
+            xvfb
+
       - name: Install Google Chrome and ChromeDriver
         run: |
           # Install Google Chrome
           wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo apt install -y ./google-chrome-stable_current_amd64.deb
           rm google-chrome-stable_current_amd64.deb
-          
+
           # Install ChromeDriver
           DRIVER_VERSION=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_STABLE")
           wget -q "https://storage.googleapis.com/chrome-for-testing-public/${DRIVER_VERSION}/linux64/chromedriver-linux64.zip"
           unzip chromedriver-linux64.zip
           sudo mv chromedriver-linux64/chromedriver /usr/local/bin/
           sudo chmod +x /usr/local/bin/chromedriver
-          rm -rf chromedriver-linux64.zip
+          rm -rf chromedriver-linux64.zip chromedriver-linux64
 
-      - name: Install Python dependencies from requirements.txt
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Run Main Python Script
-        # No 'env' block needed as credentials are in the script
         run: python -u scripts/Offres_online_bot.py
 
       - name: Upload Results and Debug Artifacts
-        # This step runs even if the script fails, so you can see logs and screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bot-artifacts
           path: |
-            tender_results.csv
-            downloads/
+            downloads/**
             *.png
             *.html
+            tender_results.csv
