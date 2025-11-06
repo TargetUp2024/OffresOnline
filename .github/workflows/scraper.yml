@@ -51,7 +51,7 @@ jobs:
 
       - name: Run Main Python Script
         # No 'env' block needed as credentials are in the script
-        run: python scripts/Offres_online_bot.py
+        run: python -u scripts/Offres_online_bot.py
 
       - name: Upload Results and Debug Artifacts
         # This step runs even if the script fails, so you can see logs and screenshots
