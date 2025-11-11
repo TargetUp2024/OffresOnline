@@ -211,10 +211,31 @@ try:
     df = pd.DataFrame(all_data)
     print(f"Created DataFrame with {len(df)} initial tenders.")
 
-    excluded_words = ["construction", "installation", "recrutement", "travaux",
-                      "fourniture", "achat", "equipement", "maintenance",
-                      "works", "goods", "supply", "acquisition", "recruitment",
-                      "nettoyage", "gardiennage"]
+    excluded_words = [
+        # French / English equivalents
+        "construction", "construction",
+        "installation", "installation",
+        "recrutement", "recruitment",
+        "travaux", "works",
+        "fourniture", "supply",
+        "achat", "purchase",
+        "equipement", "equipment",
+        "maintenance", "maintenance",
+        "works", "works",
+        "goods", "goods",
+        "supply", "supply",
+        "acquisition", "acquisition",
+        "Recruitment", "recruitment",
+        "nettoyage", "cleaning",
+        "gardiennage", "guarding",
+        "archives", "archives", "archivage",
+        "Equipment", "equipment",
+        "ÉQUIPEMENT", "equipment",
+        "équipement", "equipment",
+        "construire", "build",
+        "recrute", "recruits"
+    ]
+
     df = df[~df['Objet'].str.lower().str.contains('|'.join(excluded_words), na=False)].reset_index(drop=True)
     print(f"Filtered to {len(df)} relevant tenders.")
 
