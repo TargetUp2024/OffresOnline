@@ -2,8 +2,8 @@ name: Run Tender Bot
 
 on:
   workflow_dispatch:  # Allows manual trigger from Actions tab
-  schedule:
-   - cron: "0 4 * * *"  # 6:00 AM UTC = 7:00 AM GMT+1, runs daily
+  #schedule:
+   #- cron: "0 4 * * *"  # 6:00 AM UTC = 7:00 AM GMT+1, runs daily
 
 jobs:
   run-bot:
